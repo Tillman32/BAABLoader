@@ -12,7 +12,7 @@ const EXTENSION_CONTENT_TYPES: Record<string, string> = {
   ".mkv": "video/x-matroska"
 };
 
-function contentTypeForExtension(ext: string): string {
+export function contentTypeForExtension(ext: string): string {
   return EXTENSION_CONTENT_TYPES[ext.toLowerCase()] ?? "application/octet-stream";
 }
 

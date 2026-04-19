@@ -21,7 +21,18 @@ npm run dev        # run with tsx (no build step)
 npm run build      # tsc compile to dist/
 npm run start      # run compiled output
 npm run check      # type check only, no emit
+npm test           # run unit tests
 ```
+
+## Pre-Push Checklist (main branch)
+
+Before pushing to main:
+1. **Increment version in `package.json`** — compare against the latest git tag/release on main. Use semver: patch for bug fixes, minor for features, major for breaking changes.
+2. Run `npm run check` — no type errors
+3. Run `npm test` — all tests pass
+4. Commit version bump separately (e.g., "chore: bump to v1.2.3") before pushing
+
+The GitHub Actions workflow will auto-tag and release based on the `version` field in `package.json`.
 
 ## Testing
 

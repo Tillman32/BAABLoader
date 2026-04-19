@@ -1,0 +1,118 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+  pull_request:
+    branches:
+      - main
+      - develop
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: ['20.x']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npm run check
+
+      - name: Build
+        run: npm run build
+
+      - name: Run tests
+        run: npm test
+
+  release:
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Get version from package.json
+        id: package
+        run: echo "version=$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT
+
+      - name: Check if tag exists
+        id: tag_exists
+        run: |
+          if git rev-parse "v${{ steps.package.outputs.version }}" >/dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Validate version increment
+        if: steps.tag_exists.outputs.exists == 'false'
+        run: |
+          CURRENT_VERSION="${{ steps.package.outputs.version }}"
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          LAST_VERSION=${LAST_TAG#v}
+
+          if [ "$CURRENT_VERSION" = "$LAST_VERSION" ]; then
+            echo "❌ Error: package.json version ($CURRENT_VERSION) has not been incremented since last release ($LAST_VERSION)"
+            echo "Please update the version in package.json before pushing to main"
+            exit 1
+          fi
+
+          echo "✓ Version validated: $LAST_VERSION → $CURRENT_VERSION"
+
+      - name: Generate release notes from commits
+        if: steps.tag_exists.outputs.exists == 'false'
+        id: release_notes
+        run: |
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+
+          if [ -z "$LAST_TAG" ]; then
+            COMMIT_LOG=$(git log --pretty=format:"- %s (%h)" | head -20)
+          else
+            COMMIT_LOG=$(git log "${LAST_TAG}"..HEAD --pretty=format:"- %s (%h)")
+          fi
+
+          # Escape newlines for GitHub output
+          RELEASE_NOTES=$(echo "$COMMIT_LOG" | jq -Rs .)
+          echo "notes=$RELEASE_NOTES" >> $GITHUB_OUTPUT
+
+      - name: Create release
+        if: steps.tag_exists.outputs.exists == 'false'
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: v${{ steps.package.outputs.version }}
+          release_name: Release v${{ steps.package.outputs.version }}
+          body: |
+            ## Changes in this release
+
+            ${{ fromJson(steps.release_notes.outputs.notes) }}
+          draft: false
+          prerelease: false

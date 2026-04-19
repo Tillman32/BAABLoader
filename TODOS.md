@@ -38,17 +38,46 @@ Run with: `node --test --import tsx/esm src/test/**/*.test.ts`
 
 ---
 
+## Current / In Progress
+
+### GitHub Actions CI/CD Workflow
+- Create `.github/workflows/ci.yml` with:
+  1. Test job: runs on every push and PR (after unit test framework is added)
+  2. Release job: runs on push to main only
+     - Auto-tag with version from `package.json`
+     - Create GitHub release with tag
+     - (Optional future: auto-publish npm package)
+- **Blocker:** Unit test framework must be set up first (see "Add Comprehensive Unit Tests" below)
+
+### Add Comprehensive Unit Tests
+
+- Expand beyond `src/test/config.test.ts` and `src/test/r2.test.ts`
+- Priority test files:
+  - `src/test/hashExtractor.test.ts` -- edge cases (too short, too long, invalid chars, all numeric)
+  - `src/test/mqttClient.test.ts` -- connection, subscription, message parsing, reconnect logic
+  - `src/test/pullFromPrinter.test.ts` -- FTPS connection, file polling, timeout handling
+  - `src/test/tagTimelapses.test.ts` -- metadata tagging, timestamp parsing
+  - `src/test/uploadToR2.test.ts` -- multipart upload, dedup check, cleanup on success/failure
+  - `src/test/index.test.ts` -- daemon loop, error recovery
+- Run: `npm test` (add npm script: `"test": "node --test --import tsx/esm 'src/test/**/*.test.ts'"`)
+
+---
+
 ## Deferred (Not Blocking)
 
 ### Printer-Specific Config Validation at Startup
+
 `config.ts` throws if `PRINTER_{ID}_HOST/ACCESS_CODE/SERIAL` are missing at load time. Add a `.env.example` so operators know what to set.
 
 ### Signed URL Upgrade Path (Cloudflare Worker)
+
 Current: public R2 bucket, security-through-obscurity (6-char hash).
 Upgrade: ~20-line Cloudflare Worker that validates a hash exists in R2 and returns a 5-minute signed URL. No enumeration possible. Not needed at current scale.
 
 ### printerModel from MQTT
+
 Currently hardcoded `"P1S"`. The Bambu MQTT payload contains device info that could be parsed for model. Low priority.
 
 ### MP4 Faststart Remux
+
 MP4 files from Bambu Lab may have the moov atom at the end (not "faststart"), requiring full download before playback. An `ffmpeg -movflags faststart` remux step would fix this. Out of scope for now.
