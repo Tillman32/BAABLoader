@@ -1,12 +1,13 @@
 import { config as loadDotEnv } from "dotenv";
 import path from "node:path";
 import { z } from "zod";
+import type { PrinterConfig } from "./types.js";
 
 loadDotEnv();
 
 const envSchema = z.object({
   PRINTERS: z.string().min(1),
-  TIMELAPSE_SOURCE_ROOT: z.string().min(1),
+  TIMELAPSE_SOURCE_ROOT: z.string().optional().default(""),
   WORK_DIR: z.string().default("./data"),
   TIMELAPSE_EXTENSION: z.string().default(".mp4"),
   R2_ACCOUNT_ID: z.string().min(1),
@@ -32,11 +33,24 @@ if (!parsedEnv.success) {
 
 const env = parsedEnv.data;
 
+const printerIds = env.PRINTERS.split(",")
+  .map((v) => v.trim())
+  .filter(Boolean);
+
+const printerConfigs: PrinterConfig[] = printerIds.map((id) => {
+  const host = process.env[`PRINTER_${id}_HOST`];
+  const accessCode = process.env[`PRINTER_${id}_ACCESS_CODE`];
+  const serial = process.env[`PRINTER_${id}_SERIAL`];
+  if (!host || !accessCode || !serial) {
+    throw new Error(
+      `Missing config for printer ${id}: need PRINTER_${id}_HOST, PRINTER_${id}_ACCESS_CODE, PRINTER_${id}_SERIAL`
+    );
+  }
+  return { id, host, accessCode, serial };
+});
+
 export const appConfig = {
-  printers: env.PRINTERS.split(",")
-    .map((value) => value.trim())
-    .filter(Boolean),
-  timelapseSourceRoot: path.resolve(env.TIMELAPSE_SOURCE_ROOT),
+  printers: printerConfigs,
   workDir: path.resolve(env.WORK_DIR),
   timelapseExtension: env.TIMELAPSE_EXTENSION,
   r2: {

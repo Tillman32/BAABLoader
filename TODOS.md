@@ -1,73 +1,54 @@
 # TODOS
 
-## Research: Bambu Lab LAN authentication before building MQTT client
-**What:** Before writing the MQTT client, research the exact auth flow required by Bambu Lab P1S firmware post-January 2025.
-**Why:** Bambu pushed a firmware update in Jan 2025 that broke all third-party local LAN tools by requiring new authentication (LAN access code + X.509 certificate handling). Getting this wrong means the daemon silently fails to connect.
-**Pros:** Avoids wasted implementation effort on auth assumptions that are already wrong.
-**Cons:** 30-60 min research before any code is written.
-**Context:** Start by reading the `schwarztim/bambu-mcp` source (Node.js, does MQTT + FTPS) and the `greghesp/ha-bambulab` Home Assistant integration (Python, very complete). Both have working auth implementations as of early 2025. Key things to pin: MQTT port (8883 TLS), cert handling (self-signed, skip verify vs pin), FTPS port and passive mode, access code location in printer settings UI.
-**Depends on:** Nothing -- do this before any MQTT/FTPS code.
+## DONE
 
-## Add R2 workdir cleanup after successful upload
-**What:** Delete the staged local file (and its .json sidecar) after a confirmed successful R2 upload.
-**Why:** Without cleanup, the workDir fills with every timelapse ever downloaded. On a Mac running as a daemon, this will eventually fill the disk.
-**Pros:** Free disk space, simple to implement (fs.unlink after upload confirmation).
-**Cons:** No local backup copy (acceptable if R2 is the durable store).
-**Context:** Add to uploadToR2.ts or as a cleanup step in index.ts after each tagged timelapse is processed.
-**Depends on:** Multipart upload switch (so we know the upload actually completed).
+### ~~Research: Bambu Lab LAN authentication~~ COMPLETE
+Findings documented in `docs/bambu-lan-auth.md`. Short version:
+- MQTT: port 8883, TLS, username `bblp`, password = 8-digit access code, `rejectUnauthorized: false`
+- FTPS: port 990, implicit TLS, same credentials, `basic-ftp` with `secure: true`
+- X.509 signing: not required -- BAABLoader is read-only (subscribe only, no commands)
+- Single-client conflict: not a real problem -- Bambu Studio uses cloud MQTT, BAABLoader uses local MQTT, separate brokers
 
-## Startup backfill scan
-**What:** On daemon startup, scan each printer's SD card via FTPS and run HeadObject check for each timelapse file found. Upload any that aren't already in R2.
-**Why:** If the daemon is down when a print completes, the MQTT event is missed entirely. Without a backfill scan, that timelapse is never uploaded.
-**Pros:** Zero missed prints, even after crashes or restarts.
-**Cons:** Startup is slower (FTP scan per printer). Acceptable.
-**Context:** Implement as a reconcile() function called once at startup before subscribing to MQTT events.
-**Depends on:** FTPS printer connectivity implementation.
+### ~~Lane A: MQTT Client~~ COMPLETE
+- `src/services/mqttClient.ts` -- connects per printer, TLS port 8883, subscribes to `device/{serial}/report`, fires callback on FINISH events, auto-reconnects
+- `src/services/hashExtractor.ts` -- pure function, extracts/validates hash prefix from job name
 
----
+### ~~Lane B: FTPS Download + Startup Backfill~~ COMPLETE
+- `src/services/pullFromPrinter.ts` -- finds file by hash on SD card, 30s delay + size-stability polling, FTPS download to workDir
+- `src/services/reconcile.ts` -- startup backfill: lists each printer's /timelapse/, skips files already in R2, downloads and returns PulledTimelapse[]
 
-## Code quality fixes (do before new features)
+### ~~Lane C: R2 Upload Fixes~~ COMPLETE
+1. ~~Switch to multipart upload~~ -- using `Upload` from `@aws-sdk/lib-storage`
+2. ~~Fix ContentType~~ -- derived from `timelapseExtension` via lookup table
+3. ~~Remove `sourcePath` from tags~~ -- replaced with `hash`, `printerId`, `capturedAt`, `printerModel`, `projectName`
+4. ~~Fix idempotency bug~~ -- `objectExists()` HeadObject check before upload in `uploadToR2.ts`
+5. ~~Drop sync `node:fs` import~~ -- `uploadToR2.ts` uses `node:fs/promises` and `createReadStream` from `node:fs`
 
-### Switch PutObjectCommand → Upload (multipart)
-**What:** Replace `PutObjectCommand` in `uploadToR2.ts` with `Upload` from `@aws-sdk/lib-storage`.
-**Why:** For 100MB+ video files, a single HTTP PUT has no retry on partial failure. Multipart handles network blips gracefully.
-**Context:** `@aws-sdk/lib-storage` is already in `package.json` but unused. Drop the sync `node:fs` import once switched.
-**Depends on:** Nothing.
+### ~~Wire Everything Together~~ COMPLETE
+- `src/index.ts` rewritten as daemon loop
+- Calls `reconcile()` at startup, then `startMqttListeners()`
+- On print-complete: pull → tag → upload → cleanup staged files
+- R2 object key layout fixed: `{prefix}/{hash}/video.mp4` + `meta.json`
 
-### Fix ContentType derivation
-**What:** Derive `ContentType` from `TIMELAPSE_EXTENSION` config value instead of hardcoding `"video/mp4"`.
-**Why:** The extension is configurable but the content type is not -- they'll diverge.
-**Context:** `uploadToR2.ts:61`. Map extension to MIME type (`.mp4` → `video/mp4`, `.avi` → `video/x-msvideo`, etc.).
-**Depends on:** Nothing.
+### ~~Add Tests~~ COMPLETE
+- `src/test/config.test.ts` -- zod env schema: valid env, missing field, PRINTERS comma parsing, DRY_RUN variants (12 tests, all pass)
+- `src/test/r2.test.ts` -- objectKeys: path format, double-slash normalization, hash as prefix, no printerId leak
 
-### Remove sourcePath from R2 metadata tags
-**What:** Remove `sourcePath` from the tags object written to `meta.json` in `tagTimelapses.ts`.
-**Why:** It's a local filesystem path (`/Users/brandon/data/...`) that is meaningless to anyone reading R2.
-**Context:** Replace with just `hash`, `printerId`, `capturedAt`, `printerModel`, `projectName`.
-**Depends on:** Hash field being added to tags.
-
-### Fix idempotency bug in staging
-**What:** In `downloadTimelapses.ts:47-57`, staged files are unconditionally pushed to the upload queue even if already staged.
-**Why:** Every run re-uploads every file it finds staged. This is masked now but will be obvious once running frequently as a daemon.
-**Context:** This file will be largely replaced by `pullFromPrinter.ts`, but fix this if doing any interim work.
-**Depends on:** Nothing.
+Run with: `node --test --import tsx/esm src/test/**/*.test.ts`
 
 ---
 
-## Add tests: config validation + R2 key construction
-**What:** Add `src/test/config.test.ts` and `src/test/r2.test.ts` using Node built-in test runner.
-**Why:** This is now a customer-facing data pipeline. A bug in hash extraction or R2 key construction means a customer's timelapse gets the wrong key.
-**Context:**
-- `config.test.ts`: valid env, missing required field, PRINTERS comma parsing with spaces, DRY_RUN variants
-- `r2.test.ts`: objectKeys() path format, double-slash normalization, hash as prefix
-**Depends on:** Nothing. Pure functions, no mocking required.
+## Deferred (Not Blocking)
 
----
+### Printer-Specific Config Validation at Startup
+`config.ts` throws if `PRINTER_{ID}_HOST/ACCESS_CODE/SERIAL` are missing at load time. Add a `.env.example` so operators know what to set.
 
-## Consider: signed URL upgrade path (Cloudflare Worker)
-**What:** A ~20-line Cloudflare Worker that validates a hash exists in R2 and returns a 5-minute signed URL instead of serving the video from a public bucket.
-**Why:** Current public bucket + 6-char hash is security-through-obscurity. Anyone who guesses or enumerates hashes sees any customer's video.
-**Pros:** No enumeration possible. Can add revocation later.
-**Cons:** Adds a backend component (even if minimal).
-**Context:** Not needed at current hobby scale. Upgrade when/if the product grows or content sensitivity increases. Cloudflare Workers are free-tier eligible.
-**Depends on:** Nothing. Can be added without changing BAABLoader itself.
+### Signed URL Upgrade Path (Cloudflare Worker)
+Current: public R2 bucket, security-through-obscurity (6-char hash).
+Upgrade: ~20-line Cloudflare Worker that validates a hash exists in R2 and returns a 5-minute signed URL. No enumeration possible. Not needed at current scale.
+
+### printerModel from MQTT
+Currently hardcoded `"P1S"`. The Bambu MQTT payload contains device info that could be parsed for model. Low priority.
+
+### MP4 Faststart Remux
+MP4 files from Bambu Lab may have the moov atom at the end (not "faststart"), requiring full download before playback. An `ffmpeg -movflags faststart` remux step would fix this. Out of scope for now.
