@@ -221,9 +221,8 @@ describe("daemon orchestration logic", () => {
         // Handler logic
       };
 
-      if (onPrintComplete) {
-        callbackRegistered = true;
-      }
+      // Simulate registering the callback
+      callbackRegistered = typeof onPrintComplete === 'function';
 
       assert.ok(callbackRegistered);
     });

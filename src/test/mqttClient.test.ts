@@ -38,6 +38,7 @@ describe("mqttClient message parsing logic", () => {
     test("ignores events with missing gcode_state", () => {
       const payload = {
         print: {
+          gcode_state: undefined,
           subtask_name: "abc123-toy-name"
         }
       };
